@@ -427,3 +427,30 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# =========================================================================
+# ESCUDO DE CIBERSEGURIDAD - ARELLAN INFRA/DEVOPS
+# =========================================================================
+
+# 1. Archivos de Entorno y Secretos (PROHIBIDO SUBIR)
+.env
+.env.production
+.env.staging
+.env.local
+*.pem
+*.key
+*.cert
+*.crt
+
+# 2. Datos Locales de Contenedores (Evita pesar gigabytes)
+# Si mapean volúmenes de Docker a carpetas locales para PostgreSQL o SonarQube
+**/postgres_data/
+**/db_data/
+**/sonar_data/
+**/sonar_logs/
+docker/volumes/
+
+# 3. Archivos Temporales de Base de Datos y Logs
+*.log
+*.sql.bak
+*.dump
