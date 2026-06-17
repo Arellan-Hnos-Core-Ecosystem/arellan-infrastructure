@@ -1,0 +1,196 @@
+# Orquestacion centralizada del ecosistema Clinica Automotriz Arellan Hnos.
+# Build context de cada servicio web = raiz del ecosistema (..) para resolver
+# las dependencias file: cross-repo (@arellan-hnos-core-ecosystem/ui,
+# @arellan-hnos/business-intelligence-lab). Variables sensibles via .env
+# (ver .env.example).
+
+services:
+  # ---------------------------------------------------------------------
+  # Infraestructura de datos
+  # ---------------------------------------------------------------------
+  arellan-db:
+    image: postgres:15-alpine
+    container_name: arellan-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-arellan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-arellan_db}
+    volumes:
+      - arellan-db-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - arellan-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arellan} -d ${POSTGRES_DB:-arellan_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  arellan-cache:
+    image: redis:7-alpine
+    container_name: arellan-cache
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - arellan-cache-data:/data
+    networks:
+      - arellan-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------
+  # Servicios web (puertos secuenciales 3001-3007)
+  # ---------------------------------------------------------------------
+  backend:
+    build:
+      context: ..
+      dockerfile: arellan-platform/Dockerfile
+    container_name: arellan-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      NODE_ENV: production
+      # URLs fijas con DNS interno de Docker (arellan-db / arellan-cache):
+      # el arranque en frio no depende de que el .env del host las defina.
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-arellan}:${POSTGRES_PASSWORD}@arellan-db:5432/${POSTGRES_DB:-arellan_db}?schema=public"
+      REDIS_URL: "redis://:${REDIS_PASSWORD}@arellan-cache:6379"
+      REDIS_HOST: arellan-cache
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      CORS_ORIGINS: "http://localhost:3002,http://localhost:3003,http://localhost:3004,http://localhost:3005,http://localhost:3006,http://localhost:3007"
+      # Stack local sirve por HTTP plano: cookies con flag Secure serian
+      # descartadas por el navegador. Cambiar a "true" al desplegar tras TLS.
+      COOKIE_SECURE: "false"
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      INTEGRITY_HASH_SECRET: ${INTEGRITY_HASH_SECRET}
+      IOT_BRIDGE_SHARED_SECRET: ${IOT_BRIDGE_SHARED_SECRET}
+    depends_on:
+      arellan-db:
+        condition: service_healthy
+      arellan-cache:
+        condition: service_healthy
+    networks:
+      - arellan-net
+
+  dashboard-admin:
+    build:
+      context: ..
+      dockerfile: arellan-frontend-web/Dockerfile
+    container_name: arellan-dashboard-admin
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: "3002"
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    depends_on:
+      - backend
+    networks:
+      - arellan-net
+
+  mechanic-ui:
+    build:
+      context: ..
+      dockerfile: arellan-mechanic-ui/Dockerfile
+    container_name: arellan-mechanic-ui
+    restart: unless-stopped
+    ports:
+      - "3003:3003"
+    depends_on:
+      - backend
+    networks:
+      - arellan-net
+
+  client-portal:
+    build:
+      context: ..
+      dockerfile: arellan-client-portal/Dockerfile
+    container_name: arellan-client-portal
+    restart: unless-stopped
+    ports:
+      - "3004:3004"
+    environment:
+      PORT: "3004"
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    depends_on:
+      - backend
+    networks:
+      - arellan-net
+
+  mobile-gerencial:
+    build:
+      context: ..
+      dockerfile: arellan-mobile-app/Dockerfile
+    container_name: arellan-mobile-gerencial
+    restart: unless-stopped
+    ports:
+      - "3005:3005"
+    environment:
+      PORT: "3005"
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      # Llamadas server-side (BFF /api/auth/*): DNS interno de Docker
+      API_URL: http://backend:3001/api/v1
+    depends_on:
+      - backend
+    networks:
+      - arellan-net
+
+  status-dashboard:
+    build:
+      context: ..
+      dockerfile: arellan-status-dashboard/Dockerfile
+    container_name: arellan-status-dashboard
+    restart: unless-stopped
+    ports:
+      - "3006:3006"
+    environment:
+      PORT: "3006"
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      # Escaneo server-side de salud: DNS interno de Docker, no localhost
+      MONITOR_API_URL: http://backend:3001/api/v1/health
+      MONITOR_ADMIN_URL: http://dashboard-admin:3002/api/health
+      MONITOR_MECHANIC_URL: http://mechanic-ui:3003
+      MONITOR_CLIENT_PORTAL_URL: http://client-portal:3004
+      MONITOR_MOBILE_URL: http://mobile-gerencial:3005
+    depends_on:
+      - backend
+    networks:
+      - arellan-net
+
+  iot-bridge:
+    build:
+      context: ..
+      dockerfile: arellan-hardware-iot/Dockerfile
+    container_name: arellan-iot-bridge
+    restart: unless-stopped
+    ports:
+      - "3007:3007"
+    environment:
+      PORT: "3007"
+      NODE_ENV: production
+      IOT_BRIDGE_SHARED_SECRET: ${IOT_BRIDGE_SHARED_SECRET}
+      PLATFORM_API_URL: http://backend:3001
+    depends_on:
+      - backend
+    networks:
+      - arellan-net
+
+networks:
+  arellan-net:
+    driver: bridge
+
+volumes:
+  arellan-db-data:
+  arellan-cache-data:
